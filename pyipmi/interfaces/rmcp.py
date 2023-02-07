@@ -387,6 +387,13 @@ class Rmcp(object):
         tx_data = ipmi.pack(data)
         self._send_rmcp_msg(tx_data, RMCP_CLASS_IPMI)
 
+    def _send_ipmi_subsession_msg(self, data,session):
+        log().debug('IPMI TX: {:s}'.format(
+            ' '.join('%02x' % b for b in array('B', data))))
+        ipmi = IpmiMsg(session)
+        tx_data = ipmi.pack(data)
+        self._send_rmcp_msg(tx_data, RMCP_CLASS_IPMI)
+        
     def _receive_ipmi_msg(self):
         (_, class_of_msg, pdu) = self._receive_rmcp_msg()
         if class_of_msg != RMCP_CLASS_IPMI:
@@ -456,7 +463,10 @@ class Rmcp(object):
         req = create_request_by_name('SetSessionPrivilegeLevel')
         req.target = self.host_target
         req.privilege_level.requested = level
-        rsp = self.send_and_receive(req)
+        # req.session_id = self._session.sid
+        tmp_session=self._session
+        tmp_session.auth_type=Session.AUTH_TYPE_NONE
+        rsp = self.send_and_receive(req,session=tmp_session)
         check_completion_code(rsp.completion_code)
         return rsp
 
@@ -525,7 +535,7 @@ class Rmcp(object):
     def _inc_sequence_number(self):
         self.next_sequence_number = (self.next_sequence_number + 1) % 64
 
-    def _send_and_receive(self, target, lun, netfn, cmdid, payload):
+    def _send_and_receive(self, target, lun, netfn, cmdid, payload,session=None):
         """Send and receive data using RMCP interface.
 
         target:
@@ -546,7 +556,6 @@ class Rmcp(object):
         header.rq_lun = 0
         header.rq_sa = self.slave_address
         header.cmdid = cmdid
-
         # Bridge message
         if target.routing:
             tx_data = encode_bridged_message(target.routing, header, payload,
@@ -555,8 +564,11 @@ class Rmcp(object):
             tx_data = encode_ipmb_msg(header, payload)
 
         with self.transaction_lock:
-            self._send_ipmi_msg(tx_data)
-
+            if session==None:
+                self._send_ipmi_msg(tx_data)
+            else:
+                self._send_ipmi_subsession_msg(tx_data,session)
+            
             received = False
             while received is False:
                 if not self._q.empty():
@@ -593,7 +605,7 @@ class Rmcp(object):
                                       cmdid=array('B', raw_bytes)[0],
                                       payload=raw_bytes[1:])
 
-    def send_and_receive(self, req):
+    def send_and_receive(self, req, session=None):
         """Interface function to send and receive an IPMI message.
 
         target: IPMI target
@@ -605,7 +617,9 @@ class Rmcp(object):
                                          lun=req.lun,
                                          netfn=req.netfn,
                                          cmdid=req.cmdid,
-                                         payload=encode_message(req))
+                                         payload=encode_message(req),
+                                         session=session
+                                         )
         rsp = create_message(req.netfn + 1, req.cmdid, req.group_extension)
         decode_message(rsp, rx_data)
         return rsp
